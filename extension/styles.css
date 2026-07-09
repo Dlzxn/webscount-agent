@@ -162,6 +162,65 @@ textarea:focus { border-color: #6d5fd4; }
 .log-line.action-navigate .text { color: #38bdf8; }
 .log-line.action-error .text { color: #f87171; }
 
+/* ── Human-in-the-loop prompt ── */
+.prompt-box {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid #b4590044;
+  border-left: 3px solid #f59e0b;
+  border-radius: 8px;
+  background: #f59e0b12;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prompt-box.prompt-answered {
+  opacity: 0.55;
+  border-left-color: #475569;
+}
+
+.prompt-question {
+  color: #fbbf24;
+  word-break: break-word;
+}
+
+.prompt-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-yes {
+  background: #16a34a;
+  color: #fff;
+  flex: 1;
+}
+
+.btn-yes:not(:disabled):hover { background: #22c55e; }
+
+.btn-no {
+  background: #dc2626;
+  color: #fff;
+  flex: 1;
+}
+
+.btn-no:not(:disabled):hover { background: #ef4444; }
+
+.prompt-input {
+  flex: 1;
+  min-width: 0;
+  background: #1e2130;
+  border: 1px solid #2d3148;
+  border-radius: 7px;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+}
+
+.prompt-input:focus { border-color: #6d5fd4; }
+
 /* ── Scrollbar ── */
 .log::-webkit-scrollbar { width: 4px; }
 .log::-webkit-scrollbar-track { background: transparent; }
