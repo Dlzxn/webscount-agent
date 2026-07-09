@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebScout Agent</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>WebScout Agent</h1>
+      <div class="status-indicator">
+        <span id="status-dot" class="dot dot-unknown"></span>
+        <span id="status-label">Проверка...</span>
+      </div>
+    </header>
+
+    <div class="input-section">
+      <textarea
+        id="task-input"
+        placeholder="Опиши задачу для агента..."
+        rows="4"
+      ></textarea>
+      <div class="button-row">
+        <button id="run-btn" class="btn btn-primary">Запустить агента</button>
+        <button id="clear-btn" class="btn btn-secondary">Очистить лог</button>
+      </div>
+    </div>
+
+    <div class="log-section">
+      <div id="log" class="log"></div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
