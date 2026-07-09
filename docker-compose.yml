@@ -1,0 +1,38 @@
+services:
+  # ── MCP Server: browser automation via Playwright ──────────────────────────
+  mcp-server:
+    build: .
+    command: python mcp-server/server.py
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_HOST=0.0.0.0
+      - HEADLESS=true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s = socket.socket(); s.settimeout(2); s.connect(('localhost', 8000)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Agent: LLM orchestrator + HTTP/WS API ─────────────────────────────────
+  agent:
+    build: .
+    command: python main.py
+    ports:
+      - "8001:8001"
+    environment:
+      - MCP_SERVER_URL=http://mcp-server:8000/mcp
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+
+  # ── Extension: static file server for Chrome extension ─────────────────────
+  extension:
+    image: nginx:alpine
+    volumes:
+      - ./extension:/usr/share/nginx/html:ro
+    ports:
+      - "8080:80"
