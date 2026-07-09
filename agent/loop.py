@@ -5,18 +5,27 @@ No knowledge of WebSocket or HTTP — communicates externally only through statu
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agent.llm_client import AgentLLM, extract_text, extract_tool_use
-from agent.local_tools import ASK_USER_TOOL_SCHEMA, FINISH_TOOL_SCHEMA
+from agent.local_tools import (
+    ASK_USER_TOOL_SCHEMA,
+    CONFIRM_ACTION_TOOL_SCHEMA,
+    FINISH_TOOL_SCHEMA,
+)
 from agent.mcp_client import MCPToolClient
+
+logger = logging.getLogger("agent.loop")
 
 MAX_ITERATIONS = 30
 COMPRESS_THRESHOLD = 20
 TAIL_KEEP = 10
 
 StatusCallback = Callable[[dict], Awaitable[None]]
+# Sends a question dict to the user and waits for their text answer.
+InputCallback = Callable[[dict], Awaitable[str]]
 
 # Maps MCP tool names to the action strings expected by the extension.
 _ACTION_MAP: dict[str, str] = {
@@ -91,17 +100,34 @@ class AgentSession:
     status_callback is called on every significant step:
         {"step": int, "action": str, "details": str}
     The caller (api.py) adds "timestamp" and routes the dict to the WebSocket.
+
+    input_callback sends the same kind of dict (action "confirm_request" or
+    "ask_user") and blocks until the human answers; the answer text is fed
+    back to the LLM as the tool result.
     """
 
-    def __init__(self, task: str, status_callback: StatusCallback) -> None:
+    def __init__(
+        self,
+        task: str,
+        status_callback: StatusCallback,
+        input_callback: InputCallback,
+    ) -> None:
         self._task = task
         self._callback = status_callback
+        self._input = input_callback
         self._llm = AgentLLM()
 
     async def run(self) -> dict[str, Any]:
+        logger.info("AgentSession.run() started for task: %s", self._task[:80])
         async with MCPToolClient() as mcp:
+            logger.info("MCPToolClient connected, listing tools")
             mcp_tools = await mcp.list_tools()
-            all_tools = mcp_tools + [FINISH_TOOL_SCHEMA, ASK_USER_TOOL_SCHEMA]
+            logger.info("Got %d MCP tools", len(mcp_tools))
+            all_tools = mcp_tools + [
+                FINISH_TOOL_SCHEMA,
+                ASK_USER_TOOL_SCHEMA,
+                CONFIRM_ACTION_TOOL_SCHEMA,
+            ]
 
             messages: list[dict] = [{"role": "user", "content": self._task}]
             step = 0
@@ -145,17 +171,37 @@ class AgentSession:
                     )
                     return {"status": "completed", "result": result, "success": success}
 
-                # ── Local tool: ask_user ──────────────────────────────────────
-                if tool_use.name == "ask_user":
-                    question: str = tool_use.input.get("question", "")
-                    await self._callback(
+                # ── Local tools: ask_user / confirm_action (human in the loop) ─
+                # Both pause the loop, wait for the human's answer over the
+                # WebSocket and feed it back to the LLM as the tool result.
+                if tool_use.name in ("ask_user", "confirm_action"):
+                    if tool_use.name == "confirm_action":
+                        prompt_action = "confirm_request"
+                        prompt_text = tool_use.input.get("action_description", "")
+                    else:
+                        prompt_action = "ask_user"
+                        prompt_text = tool_use.input.get("question", "")
+
+                    answer = await self._input(
+                        {"step": step, "action": prompt_action, "details": prompt_text}
+                    )
+
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append(
                         {
-                            "step": step,
-                            "action": "thinking",
-                            "details": f"Нужна информация от пользователя: {question}",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use.id,
+                                    "content": f"Ответ пользователя: {answer}",
+                                }
+                            ],
                         }
                     )
-                    return {"status": "needs_input", "question": question}
+                    if len(messages) > COMPRESS_THRESHOLD:
+                        messages = _compress_messages(messages)
+                    continue
 
                 # ── MCP tool call ─────────────────────────────────────────────
                 action = _tool_action(tool_use.name)

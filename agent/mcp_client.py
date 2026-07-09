@@ -5,12 +5,15 @@ No knowledge of LLM, WebSocket, or HTTP API.
 
 from __future__ import annotations
 
+import logging
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from agent.config import settings
+
+logger = logging.getLogger("agent.mcp_client")
 
 
 class MCPToolClient:
@@ -29,15 +32,20 @@ class MCPToolClient:
         self._exit_stack = AsyncExitStack()
 
     async def connect(self) -> None:
+        logger.info("MCPToolClient: connecting to %s", self._url)
         read, write, _ = await self._exit_stack.enter_async_context(
-            streamablehttp_client(self._url)
+            streamable_http_client(self._url)
         )
+        logger.info("MCPToolClient: streamable_http_client connected, creating session")
         self._session = await self._exit_stack.enter_async_context(
             ClientSession(read, write)
         )
+        logger.info("MCPToolClient: session created, initializing")
         await self._session.initialize()
+        logger.info("MCPToolClient: initialized successfully")
 
     async def close(self) -> None:
+        logger.info("MCPToolClient: closing")
         await self._exit_stack.aclose()
         self._session = None
 
@@ -51,9 +59,11 @@ class MCPToolClient:
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def list_tools(self) -> list[dict]:
-        """Returns tools in Anthropic API format."""
+        """Returns tools in Anthropic API format (snake_case input_schema)."""
         assert self._session, "Not connected — use async with MCPToolClient()"
+        logger.info("MCPToolClient: list_tools()")
         result = await self._session.list_tools()
+        logger.info("MCPToolClient: list_tools() returned %d tools", len(result.tools))
         return [
             {
                 "name": t.name,
@@ -66,7 +76,9 @@ class MCPToolClient:
     async def call_tool(self, name: str, arguments: dict) -> str:
         """Calls a tool and returns its text output."""
         assert self._session, "Not connected — use async with MCPToolClient()"
+        logger.info("MCPToolClient: call_tool(%s)", name)
         result = await self._session.call_tool(name, arguments)
+        logger.info("MCPToolClient: call_tool(%s) returned", name)
         parts = [
             content.text
             for content in result.content
