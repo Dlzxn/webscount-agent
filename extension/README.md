@@ -11,9 +11,10 @@ WebSocket, стримит лог шагов в реальном времени �
 
 | Файл | Роль |
 |---|---|
-| `manifest.json` | Manifest V3: попап, разрешения, `host_permissions` для `localhost:8001` |
+| `manifest.json` | Manifest V3: попап, service worker, разрешения |
+| `background.js` | Service worker: владеет WebSocket — задачи живут при закрытом попапе, нотификации |
 | `popup.html` | Разметка попапа |
-| `popup.js` | WebSocket-клиент, лог шагов, human-in-the-loop блоки |
+| `popup.js` | Представление: лог шагов, human-in-the-loop блоки, кнопки запуска/стопа |
 | `styles.css` | Тёмная тема |
 
 ## Установка
