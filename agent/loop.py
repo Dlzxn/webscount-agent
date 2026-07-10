@@ -9,7 +9,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from agent.llm_client import AgentLLM, extract_text, extract_tool_use
+from agent.llm_client import AgentLLM, extract_text, extract_tool_use, extract_all_tool_uses
 from agent.local_tools import (
     ASK_USER_TOOL_SCHEMA,
     CONFIRM_ACTION_TOOL_SCHEMA,
@@ -20,8 +20,21 @@ from agent.mcp_client import MCPToolClient
 logger = logging.getLogger("agent.loop")
 
 MAX_ITERATIONS = 30
-COMPRESS_THRESHOLD = 20
+# Compression rewrites the history prefix and thus invalidates the message
+# cache — keep the threshold high enough that it fires rarely, not every turn.
+COMPRESS_THRESHOLD = 30
 TAIL_KEEP = 10
+TOOL_RESULT_MAX_LEN = 5000  # truncate long tool results before adding to history
+
+# Old page snapshots carry no information the latest one doesn't — stub them
+# out during compression. Short results (user answers, errors) stay intact.
+STUB_MIN_LEN = 400
+KEEP_FULL_RESULTS = 2  # newest tool-result messages that keep full content
+RESULT_STUB = (
+    "[Устаревший вывод инструмента скрыт для экономии контекста. "
+    "Актуальное состояние страницы — в последнем snapshot; "
+    "при необходимости вызови read_page или get_full_text заново.]"
+)
 
 StatusCallback = Callable[[dict], Awaitable[None]]
 # Sends a question dict to the user and waits for their text answer.
@@ -40,6 +53,8 @@ _ACTION_MAP: dict[str, str] = {
     "press_key": "click",
     "handle_dialog": "click",
     "type_text": "type_text",
+    "list_tabs": "read_page",
+    "switch_tab": "navigate",
 }
 
 
@@ -69,6 +84,10 @@ def _tool_details(name: str, args: dict) -> str:
             return f"Клавиша: {args.get('key', '')}"
         case "handle_dialog":
             return f"Диалог: {args.get('action', '')}"
+        case "list_tabs":
+            return "Список открытых вкладок"
+        case "switch_tab":
+            return f"Переключение на вкладку #{args.get('index', '?')}"
         case "type_text":
             text = str(args.get("text", ""))[:60]
             submit = args.get("submit", False)
@@ -78,10 +97,76 @@ def _tool_details(name: str, args: dict) -> str:
             return str(args)
 
 
-def _compress_messages(messages: list[dict]) -> list[dict]:
+def _stub_old_tool_results(messages: list[dict]) -> list[dict]:
     """
-    Keep messages[0] (original task) + last TAIL_KEEP messages,
-    ensuring the tail starts with an assistant turn (correct alternation).
+    Replace bulky tool results (page snapshots, full texts) with a short stub
+    in all but the KEEP_FULL_RESULTS newest tool-result messages. Originals
+    are not mutated. Idempotent: already-stubbed results are under STUB_MIN_LEN.
+    """
+    result_idxs = [
+        i
+        for i, m in enumerate(messages)
+        if m["role"] == "user" and isinstance(m["content"], list)
+    ]
+    keep = set(result_idxs[-KEEP_FULL_RESULTS:])
+
+    out: list[dict] = []
+    for i, msg in enumerate(messages):
+        if i not in result_idxs or i in keep:
+            out.append(msg)
+            continue
+        blocks = [
+            {**b, "content": RESULT_STUB}
+            if (
+                isinstance(b, dict)
+                and b.get("type") == "tool_result"
+                and isinstance(b.get("content"), str)
+                and len(b["content"]) > STUB_MIN_LEN
+            )
+            else b
+            for b in msg["content"]
+        ]
+        out.append({**msg, "content": blocks})
+    return out
+
+
+SUMMARY_PREFIX = "[Сводка ранее выполненных шагов агента]\n"
+
+
+def _split_summary(head: dict) -> tuple[str, dict]:
+    """Extract a previously attached summary block from the first message."""
+    content = head["content"]
+    if not isinstance(content, list):
+        return "", head
+    summary = ""
+    blocks = []
+    for b in content:
+        if (
+            isinstance(b, dict)
+            and b.get("type") == "text"
+            and b.get("text", "").startswith(SUMMARY_PREFIX)
+        ):
+            summary = b["text"][len(SUMMARY_PREFIX):]
+        else:
+            blocks.append(b)
+    return summary, {**head, "content": blocks}
+
+
+def _attach_summary(head: dict, summary: str) -> dict:
+    content = head["content"]
+    blocks = (
+        [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    )
+    blocks.append({"type": "text", "text": SUMMARY_PREFIX + summary})
+    return {**head, "content": blocks}
+
+
+def _compress_messages(messages: list[dict], summary: str = "") -> list[dict]:
+    """
+    Keep messages[0] (original task, with the running summary of dropped steps
+    attached) + last TAIL_KEEP messages, ensuring the tail starts with an
+    assistant turn (correct alternation), and stub bulky tool results older
+    than the last KEEP_FULL_RESULTS.
     """
     tail = messages[-TAIL_KEEP:]
     # messages[0] is always role=user, so tail must begin with assistant.
@@ -90,12 +175,20 @@ def _compress_messages(messages: list[dict]) -> list[dict]:
     )
     if first_assistant is None:
         return messages  # Can't compress safely — keep everything.
-    return [messages[0]] + tail[first_assistant:]
+    _, head = _split_summary(messages[0])
+    if summary:
+        head = _attach_summary(head, summary)
+    return [head] + _stub_old_tool_results(tail[first_assistant:])
 
 
 class AgentSession:
     """
-    Single-use agent session for one user task.
+    Agent session for one user task.
+
+    history — message history of previous tasks in the same dialog; the new
+    task is appended to it, so the agent sees what was done before. After
+    run() (even a failed one) the caller reads back `self.messages` to carry
+    the dialog on to the next task.
 
     status_callback is called on every significant step:
         {"step": int, "action": str, "details": str}
@@ -111,11 +204,54 @@ class AgentSession:
         task: str,
         status_callback: StatusCallback,
         input_callback: InputCallback,
+        history: list[dict] | None = None,
     ) -> None:
         self._task = task
         self._callback = status_callback
         self._input = input_callback
         self._llm = AgentLLM()
+        self.messages: list[dict] = list(history) if history else []
+
+    def _append_task(self) -> None:
+        """
+        Add the new task to the dialog history. A previous task usually leaves
+        the history ending with a user turn (tool results) — merge the task
+        into it as an extra text block to keep strict user/assistant
+        alternation. tool_result blocks stay first in the message, as the API
+        requires.
+        """
+        if self.messages and self.messages[-1]["role"] == "user":
+            content = self.messages[-1]["content"]
+            blocks = (
+                [{"type": "text", "text": content}]
+                if isinstance(content, str)
+                else list(content)
+            )
+            blocks.append(
+                {"type": "text", "text": f"Новая задача пользователя: {self._task}"}
+            )
+            self.messages[-1] = {"role": "user", "content": blocks}
+        else:
+            self.messages.append({"role": "user", "content": self._task})
+
+    def usage_summary(self) -> dict:
+        """Cumulative token usage + cost estimate for this session's LLM."""
+        return self._llm.usage_summary()
+
+    async def _compress(self, messages: list[dict]) -> list[dict]:
+        """
+        Model-routed compression: the cheap model (settings.anthropic_small_model)
+        summarizes the steps being dropped, so facts found mid-task survive
+        compression. On any summarizer failure, degrades to plain dropping.
+        """
+        old_summary, _ = _split_summary(messages[0])
+        dropped = messages[1 : max(1, len(messages) - TAIL_KEEP)]
+        summary = old_summary
+        try:
+            summary = await self._llm.summarize_steps(old_summary, dropped)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("history summarization failed, dropping steps plainly: %s", exc)
+        return _compress_messages(messages, summary)
 
     async def run(self) -> dict[str, Any]:
         logger.info("AgentSession.run() started for task: %s", self._task[:80])
@@ -129,7 +265,8 @@ class AgentSession:
                 CONFIRM_ACTION_TOOL_SCHEMA,
             ]
 
-            messages: list[dict] = [{"role": "user", "content": self._task}]
+            self._append_task()
+            messages = self.messages  # alias; re-bound together on compression
             step = 0
 
             for _ in range(MAX_ITERATIONS):
@@ -152,82 +289,91 @@ class AgentSession:
                         }
                     )
 
-                tool_use = extract_tool_use(response)
+                tool_uses = extract_all_tool_uses(response)
 
                 # ── No tool call → LLM answered in plain text ────────────────
-                if tool_use is None:
+                if not tool_uses:
                     summary = reasoning or "Задача завершена."
                     await self._callback(
-                        {"step": step, "action": "finish", "details": summary}
+                        {"step": step, "action": "finish", "details": summary,
+                         "usage": self.usage_summary()}
                     )
+                    # Keep the answer in history for the next task in this dialog.
+                    messages.append({"role": "assistant", "content": response.content})
                     return {"status": "completed", "result": summary}
 
-                # ── Local tool: finish ────────────────────────────────────────
-                if tool_use.name == "finish":
-                    result: str = tool_use.input.get("result", "")
-                    success: bool = tool_use.input.get("success", True)
-                    await self._callback(
-                        {"step": step, "action": "finish", "details": result}
-                    )
-                    return {"status": "completed", "result": result, "success": success}
+                # ── Process tool calls sequentially ─────────────────────────
+                tool_results = []
+                for tool_use in tool_uses:
+                    # ── Local tool: finish ────────────────────────────────
+                    if tool_use.name == "finish":
+                        result: str = tool_use.input.get("result", "")
+                        success: bool = tool_use.input.get("success", True)
+                        await self._callback(
+                            {"step": step, "action": "finish", "details": result,
+                             "usage": self.usage_summary()}
+                        )
+                        # Close the exchange in history so the next task in
+                        # this dialog continues from a valid state.
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": "Результат показан пользователю.",
+                        })
+                        messages.append({"role": "assistant", "content": response.content})
+                        messages.append({"role": "user", "content": tool_results})
+                        return {"status": "completed", "result": result, "success": success}
 
-                # ── Local tools: ask_user / confirm_action (human in the loop) ─
-                # Both pause the loop, wait for the human's answer over the
-                # WebSocket and feed it back to the LLM as the tool result.
-                if tool_use.name in ("ask_user", "confirm_action"):
-                    if tool_use.name == "confirm_action":
-                        prompt_action = "confirm_request"
-                        prompt_text = tool_use.input.get("action_description", "")
-                    else:
-                        prompt_action = "ask_user"
-                        prompt_text = tool_use.input.get("question", "")
+                    # ── Local tools: ask_user / confirm_action ─────────────
+                    if tool_use.name in ("ask_user", "confirm_action"):
+                        if tool_use.name == "confirm_action":
+                            prompt_action = "confirm_request"
+                            prompt_text = tool_use.input.get("action_description", "")
+                        else:
+                            prompt_action = "ask_user"
+                            prompt_text = tool_use.input.get("question", "")
 
-                    answer = await self._input(
-                        {"step": step, "action": prompt_action, "details": prompt_text}
-                    )
+                        answer = await self._input(
+                            {"step": step, "action": prompt_action, "details": prompt_text}
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": f"Ответ пользователя: {answer}",
+                        })
+                        continue
 
-                    messages.append({"role": "assistant", "content": response.content})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_use.id,
-                                    "content": f"Ответ пользователя: {answer}",
-                                }
-                            ],
-                        }
-                    )
-                    if len(messages) > COMPRESS_THRESHOLD:
-                        messages = _compress_messages(messages)
-                    continue
+                    # ── MCP tool call ─────────────────────────────────────
+                    action = _tool_action(tool_use.name)
+                    details = _tool_details(tool_use.name, tool_use.input)
+                    await self._callback({"step": step, "action": action, "details": details})
 
-                # ── MCP tool call ─────────────────────────────────────────────
-                action = _tool_action(tool_use.name)
-                details = _tool_details(tool_use.name, tool_use.input)
-                await self._callback({"step": step, "action": action, "details": details})
+                    try:
+                        tool_result = await mcp.call_tool(tool_use.name, dict(tool_use.input))
+                    except Exception as e:
+                        tool_result = f"Ошибка инструмента {tool_use.name}: {e}"
+                        logger.error("Tool %s failed: %s", tool_use.name, e)
 
-                tool_result = await mcp.call_tool(tool_use.name, dict(tool_use.input))
+                    # Truncate long tool results to save tokens.
+                    if len(tool_result) > TOOL_RESULT_MAX_LEN:
+                        tool_result = (
+                            tool_result[:TOOL_RESULT_MAX_LEN]
+                            + f"\n... (обрезано, всего {len(tool_result)} символов)"
+                        )
+
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": tool_result,
+                    })
 
                 # Append the full exchange to message history.
                 messages.append({"role": "assistant", "content": response.content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use.id,
-                                "content": tool_result,
-                            }
-                        ],
-                    }
-                )
+                messages.append({"role": "user", "content": tool_results})
 
                 # ── Context compression ───────────────────────────────────────
                 if len(messages) > COMPRESS_THRESHOLD:
-                    messages = _compress_messages(messages)
+                    messages = self.messages = await self._compress(messages)
 
             # ── Max iterations reached ────────────────────────────────────────
             await self._callback(
@@ -235,6 +381,7 @@ class AgentSession:
                     "step": step,
                     "action": "finish",
                     "details": f"Достигнут лимит итераций ({MAX_ITERATIONS}). Задача не завершена.",
+                    "usage": self.usage_summary(),
                 }
             )
             return {"status": "max_iterations_reached"}

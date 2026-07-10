@@ -14,6 +14,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 class Settings:
     anthropic_api_key: str
     anthropic_model: str
+    anthropic_small_model: str  # cheap model for auxiliary work (history summarization)
     mcp_server_url: str
 
 
@@ -28,6 +29,9 @@ def load_settings() -> Settings:
     return Settings(
         anthropic_api_key=api_key,
         anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+        anthropic_small_model=os.environ.get(
+            "ANTHROPIC_SMALL_MODEL", "claude-haiku-4-5-20251001"
+        ),
         mcp_server_url=os.environ.get("MCP_SERVER_URL", "http://localhost:8000/mcp"),
     )
 
