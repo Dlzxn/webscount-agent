@@ -12,12 +12,19 @@
 | Путь | Роль |
 |---|---|
 | `mcp_instance.py` | Общие синглтоны `FastMCP` и `BrowserSession` |
-| `browser/session.py` | `BrowserSession` — обёртка над Playwright (CDP/fallback, клики, ввод, snapshot) |
+| `browser/session.py` | `BrowserSession` — обёртка над Playwright: CDP/fallback, клики, ввод, snapshot, отслеживание активной вкладки |
 | `browser/snapshot.py` | Форматирование дерева элементов в компактный текст для LLM |
-| `tools/` | 11 инструментов, каждый — отдельный файл с `@mcp.tool()` |
+| `tools/` | 13 инструментов, каждый — отдельный файл с `@mcp.tool()` |
+
+## Вкладки
+
+Сессия следует фокусу реального пользователя: новая вкладка/попап от любого клика становится
+активной, при закрытии активной вкладки фокус откатывается на последнюю живую. При смене
+вкладки первый snapshot начинается с явного предупреждения для LLM (один раз, не на каждом
+вызове). Явное управление — через `list_tabs` / `switch_tab`.
 
 ## Инструменты
 
 `navigate`, `go_back`, `read_page`, `get_full_text`, `get_current_state`, `click`, `type_text`,
-`select_option`, `press_key`, `scroll`, `handle_dialog` — полное описание каждого в
-[README корня проекта](../README.md#mcp-инструменты-11-шт).
+`select_option`, `press_key`, `scroll`, `handle_dialog`, `list_tabs`, `switch_tab` — полное
+описание каждого в [README корня проекта](../README.md#mcp-инструменты-13-шт).

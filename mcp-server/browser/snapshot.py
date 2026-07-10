@@ -26,18 +26,24 @@ def _element_kind(el: dict) -> str:
 def build_snapshot(raw_tree: list[dict]) -> str:
     """
     raw_tree — list returned by BrowserSession.get_accessibility_tree().
-    Each item is either {"kind": "heading", "label": str}
+    Each item is {"kind": "heading" | "notice", "label": str}
     or {"kind": "interactive", "id": int, ...}.
 
-    Returns a human-readable numbered snapshot string.
+    Returns a human-readable numbered snapshot string. "notice" items
+    (e.g. the tab-change warning) are always rendered first.
     """
     if not raw_tree:
         return "(Страница пуста или недоступна)"
 
+    notices = [el for el in raw_tree if el.get("kind") == "notice"]
     headings = [el for el in raw_tree if el.get("kind") == "heading"]
     interactive = [el for el in raw_tree if el.get("kind") == "interactive"]
 
     lines: list[str] = []
+
+    for n in notices:
+        lines.append(n["label"])
+        lines.append("")
 
     if headings:
         for h in headings:
@@ -56,6 +62,8 @@ def build_snapshot(raw_tree: list[dict]) -> str:
             line = f"[{idx}] {kind}: {label}"
             if value:
                 line += f'  (текущее значение: "{value}")'
+            if el.get("iframe"):
+                line += "  [iframe]"
             lines.append(line)
 
     return "\n".join(lines)
