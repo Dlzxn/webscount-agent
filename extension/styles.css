@@ -1,0 +1,227 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 380px;
+  height: 500px;
+  background: #0f1117;
+  color: #e2e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 14px;
+  gap: 12px;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #a78bfa;
+  letter-spacing: 0.02em;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-unknown { background: #475569; }
+.dot-ok      { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+.dot-error   { background: #ef4444; box-shadow: 0 0 6px #ef444488; }
+
+/* ── Input section ── */
+.input-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+textarea {
+  width: 100%;
+  resize: none;
+  background: #1e2130;
+  border: 1px solid #2d3148;
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+textarea::placeholder { color: #4a5578; }
+
+textarea:focus { border-color: #6d5fd4; }
+
+.button-row {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  flex: 1;
+  background: #6d5fd4;
+  color: #fff;
+}
+
+.btn-primary:not(:disabled):hover { background: #7c6fe0; }
+
+.btn-secondary {
+  background: #1e2130;
+  color: #94a3b8;
+  border: 1px solid #2d3148;
+}
+
+.btn-secondary:not(:disabled):hover { background: #252a40; color: #cbd5e1; }
+
+/* ── Log section ── */
+.log-section {
+  flex: 1;
+  overflow: hidden;
+  border: 1px solid #2d3148;
+  border-radius: 8px;
+  background: #12151f;
+}
+
+.log {
+  height: 100%;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #94a3b8;
+}
+
+.log:empty::before {
+  content: "Лог шагов агента появится здесь...";
+  color: #334155;
+  font-style: italic;
+}
+
+.log-line {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px solid #1a1f2e;
+  word-break: break-word;
+}
+
+.log-line:last-child { border-bottom: none; }
+
+.log-line .icon { flex-shrink: 0; }
+
+.log-line .text { color: #cbd5e1; }
+
+.log-line.action-finish .text { color: #22c55e; }
+.log-line.action-thinking .text { color: #a78bfa; }
+.log-line.action-navigate .text { color: #38bdf8; }
+.log-line.action-error .text { color: #f87171; }
+
+/* ── Human-in-the-loop prompt ── */
+.prompt-box {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid #b4590044;
+  border-left: 3px solid #f59e0b;
+  border-radius: 8px;
+  background: #f59e0b12;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prompt-box.prompt-answered {
+  opacity: 0.55;
+  border-left-color: #475569;
+}
+
+.prompt-question {
+  color: #fbbf24;
+  word-break: break-word;
+}
+
+.prompt-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-yes {
+  background: #16a34a;
+  color: #fff;
+  flex: 1;
+}
+
+.btn-yes:not(:disabled):hover { background: #22c55e; }
+
+.btn-no {
+  background: #dc2626;
+  color: #fff;
+  flex: 1;
+}
+
+.btn-no:not(:disabled):hover { background: #ef4444; }
+
+.prompt-input {
+  flex: 1;
+  min-width: 0;
+  background: #1e2130;
+  border: 1px solid #2d3148;
+  border-radius: 7px;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+}
+
+.prompt-input:focus { border-color: #6d5fd4; }
+
+/* ── Scrollbar ── */
+.log::-webkit-scrollbar { width: 4px; }
+.log::-webkit-scrollbar-track { background: transparent; }
+.log::-webkit-scrollbar-thumb { background: #2d3148; border-radius: 2px; }
