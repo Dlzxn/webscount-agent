@@ -36,14 +36,19 @@ app.add_middleware(
 )
 
 
+MAX_TASK_LEN = 4000
+
+
 def _sanitize_task(task: str) -> str:
-    """Strip potential prompt-injection payloads from user task."""
-    # Remove HTML tags
+    """
+    Basic input hygiene: unescape HTML entities, drop control characters,
+    cap the length. This is NOT a prompt-injection defence — the real
+    injection surface is text on the web pages the agent reads, and the
+    mitigation for that is confirm_action before any impactful action.
+    """
     task = html.unescape(task)
-    # Remove common injection patterns
-    for pattern in ["<script", "javascript:", "onerror=", "onload=", "onclick="]:
-        task = task.replace(pattern, "")
-    return task.strip()
+    task = "".join(ch for ch in task if ch == "\n" or ch == "\t" or ord(ch) >= 32)
+    return task.strip()[:MAX_TASK_LEN]
 
 
 def _verify_auth(authorization: str | None) -> None:

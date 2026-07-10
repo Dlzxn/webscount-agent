@@ -22,7 +22,7 @@ from agent.subagent import ExtractionSubAgent
 
 logger = logging.getLogger("agent.loop")
 
-MAX_ITERATIONS = 30
+MAX_ITERATIONS = 50
 # Compression rewrites the history prefix and thus invalidates the message
 # cache — keep the threshold high enough that it fires rarely, not every turn.
 COMPRESS_THRESHOLD = 30
@@ -148,7 +148,10 @@ class _SelfCorrection:
     The hint arrives as part of the tool result, so the model can't miss it.
     """
 
-    ERROR_MARKERS = ("Ошибка", "не найден", "не найдена", "не удалось")
+    # Prefixes our own tools/loop use for error strings. Prefix-matching, not
+    # substring: a legit page snapshot may contain «Ничего не найдено» —
+    # that's page content, not a failed action.
+    ERROR_PREFIXES = ("Ошибка", "Элемент #", "Вкладка #")
 
     def __init__(self) -> None:
         self._error_streak = 0
@@ -163,8 +166,7 @@ class _SelfCorrection:
             self._repeat_count = 0
         self._last_call = call
 
-        head = result[:150] if isinstance(result, str) else ""
-        is_error = any(m in head for m in self.ERROR_MARKERS)
+        is_error = isinstance(result, str) and result.lstrip().startswith(self.ERROR_PREFIXES)
         self._error_streak = self._error_streak + 1 if is_error else 0
 
         hints: list[str] = []
