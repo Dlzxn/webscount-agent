@@ -14,6 +14,7 @@ const ACTION_ICONS = {
   confirm_request : "⚠️",
   ask_user        : "❓",
   usage           : "📊",
+  screenshot      : "📸",
 };
 
 const statusDot   = document.getElementById("status-dot");
