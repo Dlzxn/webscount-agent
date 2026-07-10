@@ -4,8 +4,10 @@ services:
     build: .
     command: python mcp-server/server.py
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"  # Bind to localhost only
     environment:
+      # 0.0.0.0 required inside the container so the agent container can
+      # reach it; host-side exposure is already limited by "127.0.0.1:8000:8000"
       - MCP_HOST=0.0.0.0
       - HEADLESS=true
     healthcheck:
@@ -20,11 +22,13 @@ services:
     build: .
     command: python -m agent.main
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"  # Bind to localhost only
     environment:
       - MCP_SERVER_URL=http://mcp-server:8000/mcp
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      - ANTHROPIC_SMALL_MODEL=${ANTHROPIC_SMALL_MODEL:-claude-haiku-4-5-20251001}
+      - API_SECRET=${API_SECRET:-}  # Set in .env for production
     depends_on:
       mcp-server:
         condition: service_healthy
@@ -35,4 +39,4 @@ services:
     volumes:
       - ./extension:/usr/share/nginx/html:ro
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"  # Bind to localhost only
