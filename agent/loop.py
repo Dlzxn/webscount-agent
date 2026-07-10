@@ -55,6 +55,7 @@ _ACTION_MAP: dict[str, str] = {
     "type_text": "type_text",
     "list_tabs": "read_page",
     "switch_tab": "navigate",
+    "screenshot": "screenshot",
 }
 
 
@@ -88,6 +89,8 @@ def _tool_details(name: str, args: dict) -> str:
             return "Список открытых вкладок"
         case "switch_tab":
             return f"Переключение на вкладку #{args.get('index', '?')}"
+        case "screenshot":
+            return "Смотрю на экран (скриншот)..."
         case "type_text":
             text = str(args.get("text", ""))[:60]
             submit = args.get("submit", False)
@@ -120,8 +123,12 @@ def _stub_old_tool_results(messages: list[dict]) -> list[dict]:
             if (
                 isinstance(b, dict)
                 and b.get("type") == "tool_result"
-                and isinstance(b.get("content"), str)
-                and len(b["content"]) > STUB_MIN_LEN
+                and (
+                    # bulky text (snapshots, full page text)
+                    (isinstance(b.get("content"), str) and len(b["content"]) > STUB_MIN_LEN)
+                    # block lists = screenshots — the most expensive history items
+                    or isinstance(b.get("content"), list)
+                )
             )
             else b
             for b in msg["content"]
@@ -355,7 +362,7 @@ class AgentSession:
                         logger.error("Tool %s failed: %s", tool_use.name, e)
 
                     # Truncate long tool results to save tokens.
-                    if len(tool_result) > TOOL_RESULT_MAX_LEN:
+                    if isinstance(tool_result, str) and len(tool_result) > TOOL_RESULT_MAX_LEN:
                         tool_result = (
                             tool_result[:TOOL_RESULT_MAX_LEN]
                             + f"\n... (обрезано, всего {len(tool_result)} символов)"

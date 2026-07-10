@@ -73,15 +73,39 @@ class MCPToolClient:
             for t in result.tools
         ]
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
-        """Calls a tool and returns its text output."""
+    async def call_tool(self, name: str, arguments: dict) -> str | list[dict]:
+        """
+        Calls a tool. Returns plain text for text-only results (cheap to
+        truncate/log), or a list of Anthropic content blocks when the result
+        contains images (the screenshot tool) — ready to be embedded into a
+        tool_result message.
+        """
         assert self._session, "Not connected — use async with MCPToolClient()"
         logger.info("MCPToolClient: call_tool(%s)", name)
         result = await self._session.call_tool(name, arguments)
         logger.info("MCPToolClient: call_tool(%s) returned", name)
-        parts = [
-            content.text
-            for content in result.content
-            if hasattr(content, "text") and content.text
-        ]
-        return "\n".join(parts) if parts else "(инструмент не вернул текста)"
+        return _to_anthropic_blocks(result.content)
+
+
+def _to_anthropic_blocks(contents: list) -> str | list[dict]:
+    """Convert MCP content items into an Anthropic tool_result payload."""
+    texts: list[str] = []
+    blocks: list[dict] = []
+    has_image = False
+    for item in contents:
+        if getattr(item, "type", "") == "image":
+            has_image = True
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": item.mimeType,
+                    "data": item.data,
+                },
+            })
+        elif getattr(item, "text", None):
+            texts.append(item.text)
+            blocks.append({"type": "text", "text": item.text})
+    if not has_image:
+        return "\n".join(texts) if texts else "(инструмент не вернул текста)"
+    return blocks
