@@ -13,3 +13,4 @@ from . import press_key       # noqa: F401
 from . import handle_dialog   # noqa: F401
 from . import list_tabs       # noqa: F401
 from . import switch_tab      # noqa: F401
+from . import screenshot      # noqa: F401

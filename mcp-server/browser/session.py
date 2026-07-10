@@ -423,6 +423,11 @@ class BrowserSession:
         notice = self._tab_change_notice(page)
         return f"{notice}\n\n{text}" if notice else text
 
+    async def screenshot(self) -> bytes:
+        """JPEG of the visible viewport of the active tab."""
+        await self._ensure_started()
+        return await self.active_page.screenshot(type="jpeg", quality=55)
+
     async def get_state(self) -> dict:
         await self._ensure_started()
         page = self.active_page
