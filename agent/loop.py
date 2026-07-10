@@ -5,6 +5,7 @@ No knowledge of WebSocket or HTTP — communicates externally only through statu
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -13,9 +14,11 @@ from agent.llm_client import AgentLLM, extract_text, extract_tool_use, extract_a
 from agent.local_tools import (
     ASK_USER_TOOL_SCHEMA,
     CONFIRM_ACTION_TOOL_SCHEMA,
+    EXTRACT_DATA_TOOL_SCHEMA,
     FINISH_TOOL_SCHEMA,
 )
 from agent.mcp_client import MCPToolClient
+from agent.subagent import ExtractionSubAgent
 
 logger = logging.getLogger("agent.loop")
 
@@ -135,6 +138,50 @@ def _stub_old_tool_results(messages: list[dict]) -> list[dict]:
         ]
         out.append({**msg, "content": blocks})
     return out
+
+
+class _SelfCorrection:
+    """
+    Deterministic self-correction: watches MCP tool calls and their results,
+    and injects a corrective hint into the observation when the agent is
+    stuck — repeating the same call verbatim or hitting errors in a row.
+    The hint arrives as part of the tool result, so the model can't miss it.
+    """
+
+    ERROR_MARKERS = ("Ошибка", "не найден", "не найдена", "не удалось")
+
+    def __init__(self) -> None:
+        self._error_streak = 0
+        self._last_call: tuple[str, str] | None = None
+        self._repeat_count = 0
+
+    def hint_for(self, name: str, args: dict, result: str | list) -> str | None:
+        call = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+        if call == self._last_call:
+            self._repeat_count += 1
+        else:
+            self._repeat_count = 0
+        self._last_call = call
+
+        head = result[:150] if isinstance(result, str) else ""
+        is_error = any(m in head for m in self.ERROR_MARKERS)
+        self._error_streak = self._error_streak + 1 if is_error else 0
+
+        hints: list[str] = []
+        if self._repeat_count >= 1:
+            hints.append(
+                f"⚠️ SELF-CHECK: ты вызвал {name} с теми же аргументами "
+                f"{self._repeat_count + 1} раз(а) подряд — результат не изменится. "
+                "Выбери ДРУГОЕ действие или другие аргументы."
+            )
+        if self._error_streak >= 2:
+            hints.append(
+                f"⚠️ SELF-CHECK: {self._error_streak} неудачных действия подряд. "
+                "Остановись и пересмотри план: вызови read_page для актуального "
+                "состояния страницы, попробуй другой элемент или другой путь к цели. "
+                "Если совсем застрял — спроси человека через ask_user."
+            )
+        return "\n\n".join(hints) if hints else None
 
 
 SUMMARY_PREFIX = "[Сводка ранее выполненных шагов агента]\n"
@@ -270,7 +317,9 @@ class AgentSession:
                 FINISH_TOOL_SCHEMA,
                 ASK_USER_TOOL_SCHEMA,
                 CONFIRM_ACTION_TOOL_SCHEMA,
+                EXTRACT_DATA_TOOL_SCHEMA,
             ]
+            corrector = _SelfCorrection()
 
             self._append_task()
             messages = self.messages  # alias; re-bound together on compression
@@ -350,6 +399,26 @@ class AgentSession:
                         })
                         continue
 
+                    # ── Local tool: extract_data → delegate to the sub-agent ─
+                    if tool_use.name == "extract_data":
+                        query = str(tool_use.input.get("query", ""))
+                        await self._callback({
+                            "step": step, "action": "subagent",
+                            "details": f"Суб-агент читает страницу: {query[:80]}",
+                        })
+                        sub = ExtractionSubAgent(self._llm, mcp, mcp_tools)
+                        try:
+                            report = await sub.run(query)
+                        except Exception as exc:  # noqa: BLE001
+                            report = f"Ошибка суб-агента: {exc}"
+                            logger.error("sub-agent failed: %s", exc)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": f"Отчёт суб-агента:\n{report}",
+                        })
+                        continue
+
                     # ── MCP tool call ─────────────────────────────────────
                     action = _tool_action(tool_use.name)
                     details = _tool_details(tool_use.name, tool_use.input)
@@ -367,6 +436,14 @@ class AgentSession:
                             tool_result[:TOOL_RESULT_MAX_LEN]
                             + f"\n... (обрезано, всего {len(tool_result)} символов)"
                         )
+
+                    # Self-correction: nudge the model when it's stuck.
+                    hint = corrector.hint_for(tool_use.name, dict(tool_use.input), tool_result)
+                    if hint:
+                        if isinstance(tool_result, str):
+                            tool_result = f"{tool_result}\n\n{hint}"
+                        else:  # image blocks (screenshot) — attach as text block
+                            tool_result = list(tool_result) + [{"type": "text", "text": hint}]
 
                     tool_results.append({
                         "type": "tool_result",

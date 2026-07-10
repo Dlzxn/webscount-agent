@@ -64,9 +64,13 @@ SYSTEM_PROMPT = """\
 клик открыл новую вкладку и все инструменты теперь работают с ней. Если новая вкладка — то, \
 что тебе нужно, продолжай в ней; если нет (например реклама) — вернись через list_tabs и \
 switch_tab.
-- ЭКОНОМЬ ТОКЕНЫ: сначала ищи нужную информацию через read_page. \
-Вызывай get_full_text ТОЛЬКО когда read_page не содержит нужных данных (цены, описания, \
-длинные списки). Не вызывай get_full_text повторно на той же странице — кешируй результат.
+- ЭКОНОМЬ ТОКЕНЫ: сначала ищи нужную информацию через read_page. Для извлечения данных с \
+ДЛИННЫХ страниц (каталоги, результаты поиска, статьи, таблицы) используй extract_data — \
+суб-агент прочитает страницу дешёвой моделью и вернёт только нужные факты. get_full_text \
+вызывай только для коротких страниц, и не повторно на той же странице.
+- Если в результате инструмента появился блок «SELF-CHECK» — это сигнал, что ты застрял: \
+ОБЯЗАТЕЛЬНО смени стратегию (другой элемент, другой путь, read_page, ask_user), \
+не продолжай тот же подход.
 - screenshot — КРАЙНЯЯ МЕРА, самый дорогой инструмент. Используй его только когда текстовые \
 инструменты не дают понять, что происходит на странице: canvas/карты/графики, капча, \
 подозрение на оверлей или сломанную вёрстку, элементы ведут себя не так, как ожидается. \
@@ -180,6 +184,24 @@ class AgentLLM:
             **self.usage,
             "cost_usd": round(self._cost_usd, 4) if self._cost_known else None,
         }
+
+    async def small_call(
+        self,
+        system: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> anthropic.types.Message:
+        """Generic call to the cheap model (sub-agents, auxiliary work)."""
+        kwargs: dict = {"tools": tools} if tools else {}
+        response = await self._client.messages.create(
+            model=self._small_model,
+            max_tokens=700,
+            system=system,
+            messages=_with_cache_breakpoint(messages),
+            **kwargs,
+        )
+        self._track_usage(response, self._small_model)
+        return response
 
     async def summarize_steps(self, old_summary: str, dropped: list[dict]) -> str:
         """

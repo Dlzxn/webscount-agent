@@ -12,9 +12,10 @@ LLM-оркестратор: получает задачу от расширен�
 |---|---|
 | `config.py` | Настройки из `.env` (API-ключ, модель, URL MCP-сервера) |
 | `llm_client.py` | Обёртка над Anthropic API + системный промпт агента |
-| `local_tools.py` | Схемы локальных инструментов: `finish`, `ask_user`, `confirm_action` |
+| `local_tools.py` | Схемы локальных инструментов: `finish`, `ask_user`, `confirm_action`, `extract_data` |
 | `mcp_client.py` | Клиент MCP-сервера (streamable-http) |
-| `loop.py` | `AgentSession` — главный цикл агента |
+| `loop.py` | `AgentSession` — главный цикл агента + self-correction |
+| `subagent.py` | Суб-агент чтения страниц на дешёвой модели (`extract_data`) |
 | `api.py` | FastAPI: `GET /health`, `WebSocket /ws` |
 
 Подробности об архитектуре и потоке данных — в [README корня проекта](../README.md).
