@@ -15,6 +15,7 @@ const ACTION_ICONS = {
   ask_user        : "❓",
   usage           : "📊",
   screenshot      : "📸",
+  subagent        : "🤖",
 };
 
 const statusDot   = document.getElementById("status-dot");
@@ -79,8 +80,7 @@ function renderPrompt({ text, action }) {
   controls.className = "prompt-controls";
 
   function sendAnswer(answer) {
-    if (!port) return;
-    port.postMessage({ cmd: "answer", text: answer });
+    sendCommand({ cmd: "answer", text: answer });
     box.classList.add("prompt-answered");
     controls.querySelectorAll("button, input").forEach((el) => (el.disabled = true));
   }
@@ -137,28 +137,43 @@ function renderEntry(entry, { live = false } = {}) {
 
 // ── Service worker connection ────────────────────────────────────────────────
 
+function onBackgroundMessage(msg) {
+  if (msg.type === "init") {
+    log.innerHTML = "";
+    const entries = msg.logHistory || [];
+    entries.forEach((entry, i) => {
+      // An unanswered question at the tail is still live — the SW holds the
+      // WS open; render it interactively so the user can answer it now.
+      const isLiveTail = msg.running && entry.prompt && i === entries.length - 1;
+      renderEntry(entry, { live: isLiveTail });
+    });
+    setRunning(msg.running);
+  } else if (msg.type === "log") {
+    renderEntry(msg.entry, { live: running });
+  } else if (msg.type === "state") {
+    setRunning(msg.running);
+  }
+}
+
 function connectBackground() {
   port = chrome.runtime.connect({ name: "popup" });
-
-  port.onMessage.addListener((msg) => {
-    if (msg.type === "init") {
-      log.innerHTML = "";
-      const entries = msg.logHistory || [];
-      entries.forEach((entry, i) => {
-        // An unanswered question at the tail is still live — the SW holds the
-        // WS open; render it interactively so the user can answer it now.
-        const isLiveTail = msg.running && entry.prompt && i === entries.length - 1;
-        renderEntry(entry, { live: isLiveTail });
-      });
-      setRunning(msg.running);
-    } else if (msg.type === "log") {
-      renderEntry(msg.entry, { live: running });
-    } else if (msg.type === "state") {
-      setRunning(msg.running);
-    }
-  });
-
+  // Chrome idle-kills the MV3 service worker (~30s of silence) — the port
+  // dies with it. Drop our reference; sendCommand reconnects on demand,
+  // which also wakes the worker back up.
+  port.onDisconnect.addListener(() => { port = null; });
+  port.onMessage.addListener(onBackgroundMessage);
   port.postMessage({ cmd: "getState" });
+}
+
+function sendCommand(msg) {
+  if (!isExtension) return;
+  if (!port) connectBackground();
+  try {
+    port.postMessage(msg);
+  } catch {
+    connectBackground(); // port died between check and send — retry once
+    port.postMessage(msg);
+  }
 }
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -175,9 +190,8 @@ async function checkHealth() {
 // ── Buttons ──────────────────────────────────────────────────────────────────
 
 runBtn.addEventListener("click", () => {
-  if (!port) return;
   if (running) {
-    port.postMessage({ cmd: "cancel" });
+    sendCommand({ cmd: "cancel" });
     return;
   }
   const task = taskInput.value.trim();
@@ -185,7 +199,7 @@ runBtn.addEventListener("click", () => {
     renderLine({ text: "Введи описание задачи перед запуском", isError: true });
     return;
   }
-  port.postMessage({ cmd: "run", task });
+  sendCommand({ cmd: "run", task });
   taskInput.value = "";
 });
 
@@ -199,7 +213,7 @@ taskInput.addEventListener("keydown", (e) => {
 
 clearBtn.addEventListener("click", () => {
   log.innerHTML = "";
-  if (port) port.postMessage({ cmd: "clear" });
+  sendCommand({ cmd: "clear" });
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────

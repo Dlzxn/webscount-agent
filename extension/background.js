@@ -29,19 +29,28 @@ async function loadState() {
   await chrome.storage.session.set({ sessionId, running });
 }
 
+function postToPopup(msg) {
+  if (!popupPort) return;
+  try {
+    popupPort.postMessage(msg);
+  } catch {
+    popupPort = null; // popup closed between messages — not an error
+  }
+}
+
 function pushEntry(entry) {
   logHistory.push(entry);
   if (logHistory.length > MAX_LOG_ENTRIES) {
     logHistory = logHistory.slice(-MAX_LOG_ENTRIES);
   }
   chrome.storage.session.set({ logHistory });
-  if (popupPort) popupPort.postMessage({ type: "log", entry });
+  postToPopup({ type: "log", entry });
 }
 
 function setRunning(val) {
   running = val;
   chrome.storage.session.set({ running: val });
-  if (popupPort) popupPort.postMessage({ type: "state", running: val });
+  postToPopup({ type: "state", running: val });
 }
 
 // ── Notifications (only when the popup is closed) ────────────────────────────
