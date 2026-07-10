@@ -22,7 +22,7 @@ from agent.subagent import ExtractionSubAgent
 
 logger = logging.getLogger("agent.loop")
 
-MAX_ITERATIONS = 50
+MAX_ITERATIONS = 100
 # Compression rewrites the history prefix and thus invalidates the message
 # cache — keep the threshold high enough that it fires rarely, not every turn.
 COMPRESS_THRESHOLD = 30
