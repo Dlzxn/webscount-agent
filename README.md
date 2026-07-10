@@ -28,14 +28,17 @@ AI-агент для автоматизации браузера. Пользов
 |---|---|---|---|
 | Chrome Extension | `extension/` | — | UI: ввод задачи, лог шагов, human-in-the-loop |
 | Agent | `agent/` + `main.py` | 8001 | LLM-оркестратор (Claude) + WebSocket API |
-| MCP Server | `mcp-server/` | 8000 | 11 браузерных инструментов через Playwright |
+| MCP Server | `mcp-server/` | 8000 | 13 браузерных инструментов через Playwright |
 
 ## Ключевые возможности
 
 - **CDP-подключение** — агент подключается к вашему уже запущенному браузеру через Chrome DevTools Protocol и работает в той же вкладке, что и вы. Логины, cookies, сессии — всё сохраняется.
 - **Human-in-the-loop** — агент может задать вопрос (`ask_user`) или запросить подтверждение (`confirm_action`) перед важными действиями (оплата, отправка формы). Всё через WebSocket, без перезагрузки.
 - **MCP-протокол** — браузерные инструменты выделены в отдельный MCP-сервер. Агент и инструменты полностью декаплены.
-- **Контекстная компрессия** — при длинных задачах (>20 сообщений) средние шаги сжимаются, чтобы не выходить за лимит контекстного окна.
+- **Контекстная компрессия с суммаризацией** — при длинных задачах средние шаги сжимаются: дешёвая модель (Haiku) делает сводку фактов, вместо того чтобы их выбрасывать. История и статичный префикс кэшируются (prompt caching).
+- **Фоновое выполнение** — WebSocket живёт в service worker расширения: задача продолжается при закрытом попапе, по завершении приходит нотификация. Кнопка «Остановить» отменяет задачу.
+- **Статистика токенов** — по завершении задачи в лог выводится расход токенов, доля кэша и оценка стоимости.
+- **iframe и скачивания** — snapshot включает элементы внутри iframe (платёжные формы, виджеты), скачивания файлов явно репортятся агенту.
 - **Docker** — полная контейнеризация с headless Chromium.
 
 ## Быстрый старт
@@ -89,13 +92,14 @@ docker-compose up --build
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | *обязательно* | API-ключ Anthropic |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Модель Claude |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Основная модель Claude |
+| `ANTHROPIC_SMALL_MODEL` | `claude-haiku-4-5-20251001` | Дешёвая модель для сжатия истории |
 | `MCP_SERVER_URL` | `http://localhost:8000/mcp` | URL MCP-сервера |
 | `BROWSER_CDP_URL` | `http://127.0.0.1:9222` | CDP-эндпоинт браузера |
 | `HEADLESS` | `false` | Headless-режим (для Docker) |
 | `MCP_HOST` | `127.0.0.1` | Bind-адрес MCP-сервера |
 
-## MCP-инструменты (11 шт.)
+## MCP-инструменты (13 шт.)
 
 Каждый инструмент — отдельный файл в `mcp-server/tools/`, зарегистрированный через `@mcp.tool()`.
 
@@ -105,7 +109,9 @@ docker-compose up --build
 | `go_back()` | Кнопка «Назад» |
 | `read_page()` | Snapshot интерактивных элементов с номерами `[N]` |
 | `get_full_text()` | Весь видимый текст страницы |
-| `get_current_state()` | Текущий URL + заголовок (JSON) |
+| `get_current_state()` | Текущий URL + заголовок + число вкладок (JSON) |
+| `list_tabs()` | Список открытых вкладок с пометкой активной |
+| `switch_tab(index)` | Переключение активной вкладки по номеру из `list_tabs` |
 | `click(element_id)` | Клик по элементу `[N]` |
 | `type_text(element_id, text, submit)` | Ввод текста, опционально + Enter |
 | `select_option(element_id, option_label)` | Выбор в `<select>` по видимому тексту |
@@ -128,7 +134,7 @@ docker-compose up --build
 
 2. AgentSession.run():
    a. MCPToolClient подключается к MCP-серверу (streamable-http)
-   b. Получает 11 MCP-инструментов + 3 локальных
+   b. Получает 13 MCP-инструментов + 3 локальных
    c. Цикл (до 30 итераций):
       → WS {"action": "thinking"}        → 💭 в логе
       → Claude выбирает инструмент
@@ -182,7 +188,7 @@ webscount-agent/
 │   ├── browser/
 │   │   ├── session.py             # BrowserSession — обёртка над Playwright
 │   │   └── snapshot.py            # Форматирование дерева элементов в текст
-│   └── tools/                     # 11 @mcp.tool() инструментов
+│   └── tools/                     # 13 @mcp.tool() инструментов
 │       ├── navigate.py
 │       ├── click.py
 │       ├── type_text.py
@@ -193,7 +199,9 @@ webscount-agent/
 │       ├── select_option.py
 │       ├── press_key.py
 │       ├── go_back.py
-│       └── handle_dialog.py
+│       ├── handle_dialog.py
+│       ├── list_tabs.py
+│       └── switch_tab.py
 │
 └── extension/                     # Chrome Extension (Manifest V3)
     ├── manifest.json
@@ -212,7 +220,6 @@ webscount-agent/
 
 ## Известные ограничения
 
-- **Одна вкладка** — `BrowserSession` управляет одной страницей.
 - **Одна задача одновременно** — WebSocket-сессия одна на подключение.
 - **Контекстное окно** — компрессия отбрасывает средние шаги при длинных задачах.
 - **Windows** — MCP-сервер использует ProactorEventLoop (Playwright требует его для `create_subprocess_exec`).
