@@ -28,7 +28,7 @@ AI-агент для автоматизации браузера. Пользов
 |---|---|---|---|
 | Chrome Extension | `extension/` | — | UI: ввод задачи, лог шагов, human-in-the-loop |
 | Agent | `agent/` + `main.py` | 8001 | LLM-оркестратор (Claude) + WebSocket API |
-| MCP Server | `mcp-server/` | 8000 | 13 браузерных инструментов через Playwright |
+| MCP Server | `mcp-server/` | 8000 | 14 браузерных инструментов через Playwright |
 
 ## Ключевые возможности
 
@@ -38,6 +38,8 @@ AI-агент для автоматизации браузера. Пользов
 - **Контекстная компрессия с суммаризацией** — при длинных задачах средние шаги сжимаются: дешёвая модель (Haiku) делает сводку фактов, вместо того чтобы их выбрасывать. История и статичный префикс кэшируются (prompt caching).
 - **Фоновое выполнение** — WebSocket живёт в service worker расширения: задача продолжается при закрытом попапе, по завершении приходит нотификация. Кнопка «Остановить» отменяет задачу.
 - **Статистика токенов** — по завершении задачи в лог выводится расход токенов, доля кэша и оценка стоимости.
+- **Sub-agent архитектура** — главный агент делегирует чтение длинных страниц суб-агенту (`extract_data`): тот на дешёвой модели сам читает и прокручивает страницу и возвращает только факты.
+- **Self-correction** — цикл детектирует застревание (повтор одного и того же вызова, серия ошибок) и вживляет в результат инструмента корректирующую подсказку `SELF-CHECK`, заставляющую агента сменить стратегию.
 - **iframe и скачивания** — snapshot включает элементы внутри iframe (платёжные формы, виджеты), скачивания файлов явно репортятся агенту.
 - **Docker** — полная контейнеризация с headless Chromium.
 
@@ -99,7 +101,7 @@ docker-compose up --build
 | `HEADLESS` | `false` | Headless-режим (для Docker) |
 | `MCP_HOST` | `127.0.0.1` | Bind-адрес MCP-сервера |
 
-## MCP-инструменты (13 шт.)
+## MCP-инструменты (14 шт.)
 
 Каждый инструмент — отдельный файл в `mcp-server/tools/`, зарегистрированный через `@mcp.tool()`.
 
@@ -112,6 +114,7 @@ docker-compose up --build
 | `get_current_state()` | Текущий URL + заголовок + число вкладок (JSON) |
 | `list_tabs()` | Список открытых вкладок с пометкой активной |
 | `switch_tab(index)` | Переключение активной вкладки по номеру из `list_tabs` |
+| `screenshot()` | Скриншот видимой области (vision; крайняя мера — дорого по токенам) |
 | `click(element_id)` | Клик по элементу `[N]` |
 | `type_text(element_id, text, submit)` | Ввод текста, опционально + Enter |
 | `select_option(element_id, option_label)` | Выбор в `<select>` по видимому тексту |
@@ -126,6 +129,7 @@ docker-compose up --build
 | `finish(result, success)` | Завершение задачи |
 | `ask_user(question)` | Вопрос пользователю (блокирует цикл до ответа) |
 | `confirm_action(action_description)` | Подтверждение перед важным действием |
+| `extract_data(query)` | Делегирование чтения страницы суб-агенту на дешёвой модели |
 
 ## Поток данных
 
@@ -134,7 +138,7 @@ docker-compose up --build
 
 2. AgentSession.run():
    a. MCPToolClient подключается к MCP-серверу (streamable-http)
-   b. Получает 13 MCP-инструментов + 3 локальных
+   b. Получает 14 MCP-инструментов + 3 локальных
    c. Цикл (до 30 итераций):
       → WS {"action": "thinking"}        → 💭 в логе
       → Claude выбирает инструмент
@@ -177,9 +181,10 @@ webscount-agent/
 ├── agent/                         # LLM-оркестратор
 │   ├── config.py                  # Настройки из .env
 │   ├── llm_client.py              # Обёртка над Anthropic API + системный промпт
-│   ├── local_tools.py             # Схемы finish / ask_user / confirm_action
+│   ├── local_tools.py             # Схемы finish / ask_user / confirm_action / extract_data
 │   ├── mcp_client.py              # MCP-клиент (streamable-http)
-│   ├── loop.py                    # Главный цикл агента (AgentSession)
+│   ├── loop.py                    # Главный цикл агента (AgentSession) + self-correction
+│   ├── subagent.py                # Суб-агент чтения страниц (дешёвая модель)
 │   └── api.py                     # FastAPI: WebSocket /ws, GET /health
 │
 ├── mcp-server/                    # Браузерные инструменты (MCP)
@@ -188,7 +193,7 @@ webscount-agent/
 │   ├── browser/
 │   │   ├── session.py             # BrowserSession — обёртка над Playwright
 │   │   └── snapshot.py            # Форматирование дерева элементов в текст
-│   └── tools/                     # 13 @mcp.tool() инструментов
+│   └── tools/                     # 14 @mcp.tool() инструментов
 │       ├── navigate.py
 │       ├── click.py
 │       ├── type_text.py
@@ -201,7 +206,8 @@ webscount-agent/
 │       ├── go_back.py
 │       ├── handle_dialog.py
 │       ├── list_tabs.py
-│       └── switch_tab.py
+│       ├── switch_tab.py
+│       └── screenshot.py
 │
 └── extension/                     # Chrome Extension (Manifest V3)
     ├── manifest.json
